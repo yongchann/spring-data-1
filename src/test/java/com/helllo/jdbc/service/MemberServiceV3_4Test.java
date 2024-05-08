@@ -1,0 +1,104 @@
+package com.helllo.jdbc.service;
+
+import com.helllo.jdbc.domain.Member;
+import com.helllo.jdbc.repository.MemberRepositoryV3;
+import lombok.extern.slf4j.Slf4j;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+
+import javax.sql.DataSource;
+import java.sql.SQLException;
+
+/**
+ * 트랜잭션 - DataSource, TransactionManager 자동 등록
+ */
+@Slf4j
+@SpringBootTest
+class MemberServiceV3_4Test {
+
+    public static final String MEMBER_A = "memberA";
+    public static final String MEMBER_B = "memberB";
+    public static final String MEMBER_EX = "ex";
+
+    @Autowired
+    private MemberRepositoryV3 memberRepository;
+
+    @Autowired
+    private MemberServiceV3_3 memberService;
+
+    @TestConfiguration
+    static class TestConfig {
+
+        @Autowired
+        private DataSource dataSource;
+
+        @Bean
+        MemberRepositoryV3 memberRepository() {
+            return new MemberRepositoryV3(dataSource);
+        }
+
+        @Bean
+        MemberServiceV3_3 memberService() {
+            return new MemberServiceV3_3(memberRepository());
+        }
+    }
+
+    @AfterEach
+    void after() throws SQLException {
+        memberRepository.delete(MEMBER_A);
+        memberRepository.delete(MEMBER_B);
+        memberRepository.delete(MEMBER_EX);
+    }
+
+    @Test
+    void AOP_적용() {
+        log.info("memberService class={}", memberService.getClass());
+        log.info("memberRepository class={}", memberRepository.getClass());
+        Assertions.assertThat(AopUtils.isAopProxy(memberService)).isTrue();
+        Assertions.assertThat(AopUtils.isAopProxy(memberRepository)).isFalse();
+    }
+
+    @Test
+    void 정상_이체() throws SQLException {
+        Member memberA = new Member(MEMBER_A, 10000);
+        Member memberB = new Member(MEMBER_B, 10000);
+        memberRepository.save(memberA);
+        memberRepository.save(memberB);
+
+        memberService.accountTransfer(MEMBER_A, MEMBER_B, 5000);
+
+        Member findMemberA = memberRepository.findById(MEMBER_A);
+        Member findMemberB = memberRepository.findById(MEMBER_B);
+
+        Assertions.assertThat(findMemberA.getMoney()).isEqualTo(5000);
+        Assertions.assertThat(findMemberB.getMoney()).isEqualTo(15000);
+    }
+
+    @Test
+    void 이체_오류() throws SQLException {
+        //given
+        Member memberA = new Member(MEMBER_A, 10000);
+        Member memberEx = new Member(MEMBER_EX, 10000);
+        memberRepository.save(memberA);
+        memberRepository.save(memberEx);
+
+        //when
+        log.info("START TX");
+        Assertions.assertThatThrownBy(() -> memberService.accountTransfer(MEMBER_A, MEMBER_EX, 5000))
+                .isInstanceOf(IllegalStateException.class);
+
+        //then
+        Member findMemberA = memberRepository.findById(MEMBER_A);
+        Member findMemberEx = memberRepository.findById(MEMBER_EX);
+
+        Assertions.assertThat(findMemberA.getMoney()).isEqualTo(10000); // A의 잔고만 줄어들어 비즈니스 로직의 원자성이 깨짐
+        Assertions.assertThat(findMemberEx.getMoney()).isEqualTo(10000);
+    }
+
+}
